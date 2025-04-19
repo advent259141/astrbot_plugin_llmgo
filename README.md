@@ -1,6 +1,14 @@
+</div>
+
+<div align="center">
+
+![:name](https://count.getloli.com/@llmgo?name=llmgo&theme=miku&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
+
+</div>
+
 # LLM Go Plugin for AstrBot
 
-这是一个为 AstrBot 设计的围棋插件，允许用户与 LLM 进行围棋对弈。
+这是一个围棋插件，允许用户与 LLM 进行围棋对弈。
 
 ## 功能
 
