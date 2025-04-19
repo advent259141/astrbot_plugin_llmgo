@@ -14,7 +14,7 @@ from typing import Dict, Any
 # value: 游戏状态字典 (board, user_color, ai_color, current_turn)
 active_games: Dict[str, Dict[str, Any]] = {}
 
-@register("llm_go", "GitHub Copilot", "与 LLM 下围棋的插件", "0.1.0", "")
+@register("llm_go", "Jason.Joestar", "与 LLM 下围棋的插件", "0.1.0", "")
 class LLMGoPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
