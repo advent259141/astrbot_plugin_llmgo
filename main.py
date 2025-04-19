@@ -7,14 +7,14 @@ import json
 import os
 import numpy as np
 import tempfile
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple, Set
 
 # 存储活动游戏的状态
 # key: event.unified_msg_origin (唯一标识用户/群聊)
 # value: 游戏状态字典 (board, user_color, ai_color, current_turn)
 active_games: Dict[str, Dict[str, Any]] = {}
 
-@register("llm_go", "Jason.Joestar", "与 LLM 下围棋的插件", "0.1.0", "")
+@register("llm_go", "GitHub Copilot", "与 LLM 下围棋的插件", "0.1.0", "")
 class LLMGoPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -77,6 +77,7 @@ class LLMGoPlugin(Star):
 
         # 如果AI先手，让AI先下
         if current_turn == ai_color:
+            # AI第一步不需要考虑吃子
             ai_move = await self.get_ai_move(board, ai_color, user_color)
             if ai_move:
                 x, y = ai_move
@@ -127,43 +128,199 @@ class LLMGoPlugin(Star):
             yield event.plain_result(f"位置 ({x},{y}) 已有棋子。")
             return
 
-        # 用户落子
+        # --- 用户回合 ---
+        # 1. 用户落子 (先尝试落子)
         board[x][y] = user_color
-        game_state["current_turn"] = ai_color # 轮到AI
 
+        # 2. 检查用户是否吃掉了AI的子
+        captured_by_user = self.find_and_remove_captured(board, x, y, user_color, ai_color)
+        capture_message = f"你吃掉了{len(captured_by_user)}颗棋子！\n" if captured_by_user else ""
+
+        # 4. 发送用户落子和吃子结果
         board_image_user = self.render_stones(board)
         temp_file_user = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
         board_image_user.save(temp_file_user.name)
-
         user_move_message = event.make_result()
         user_move_message.chain = [
-            Comp.Plain(f"你在 ({x},{y}) 落子\n"),
+            Comp.Plain(f"你在 ({x},{y}) 落子\n{capture_message}"),
             Comp.Image(file=temp_file_user.name)
         ]
         await event.send(user_move_message)
 
-        # AI回合
+        # 5. 切换到AI回合
+        game_state["current_turn"] = ai_color
+
+        # --- AI 回合 ---
+        # 1. 获取AI落子位置
         ai_move = await self.get_ai_move(board, ai_color, user_color)
         if ai_move:
             ai_x, ai_y = ai_move
-            board[ai_x][ai_y] = ai_color
-            game_state["current_turn"] = user_color # 轮到用户
 
+            # 2. AI落子
+            board[ai_x][ai_y] = ai_color
+
+            # 3. 检查AI是否吃掉了用户的子
+            captured_by_ai = self.find_and_remove_captured(board, ai_x, ai_y, ai_color, user_color)
+            ai_capture_message = f"AI吃掉了{len(captured_by_ai)}颗棋子！\n" if captured_by_ai else ""
+
+            # 5. 发送AI落子和吃子结果
             board_image_ai = self.render_stones(board)
             temp_file_ai = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
             board_image_ai.save(temp_file_ai.name)
-
             ai_move_message = event.make_result()
             ai_move_message.chain = [
-                Comp.Plain(f"AI 在 ({ai_x},{ai_y}) 落子\n"),
+                Comp.Plain(f"AI 在 ({ai_x},{ai_y}) 落子\n{ai_capture_message}"),
                 Comp.Image(file=temp_file_ai.name)
             ]
             await event.send(ai_move_message)
+
+            # 6. 切换回用户回合
+            game_state["current_turn"] = user_color
         else:
-            # AI未能落子，可能棋盘已满或出错
+            # AI未能落子
             game_state["current_turn"] = user_color # 轮到用户继续
             yield event.plain_result("AI 未能落子，轮到你了。")
 
+    def get_neighbors(self, x: int, y: int) -> List[Tuple[int, int]]:
+        """获取一个点的相邻点坐标"""
+        neighbors = []
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
+                neighbors.append((nx, ny))
+        return neighbors
+
+    def get_group_liberties(self, board: np.ndarray, x: int, y: int, color: int) -> Tuple[int, Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+        """
+        计算包含(x, y)的棋子组的气数、组成员和气的位置。
+        返回: (气数, 组成员坐标集合, 气坐标集合)
+        """
+        if board[x][y] != color:
+            return 0, set(), set()
+
+        q = [(x, y)]
+        visited_stones = set([(x, y)])
+        liberties = set()
+
+        while q:
+            cx, cy = q.pop(0)
+            for nx, ny in self.get_neighbors(cx, cy):
+                neighbor_state = board[nx][ny]
+                if neighbor_state == 2: # 空点是气
+                    liberties.add((nx, ny))
+                elif neighbor_state == color and (nx, ny) not in visited_stones:
+                    visited_stones.add((nx, ny))
+                    q.append((nx, ny))
+        return len(liberties), visited_stones, liberties
+
+    def find_and_remove_captured(self, board: np.ndarray, move_x: int, move_y: int, move_color: int, opponent_color: int) -> List[Tuple[int, int]]:
+        """
+        在落子(move_x, move_y)后，查找并移除被吃掉的对方棋子。
+        返回被吃掉的棋子坐标列表。
+        """
+        captured_stones_total = []
+        for nx, ny in self.get_neighbors(move_x, move_y):
+            if board[nx][ny] == opponent_color:
+                liberty_count, group_stones, _ = self.get_group_liberties(board, nx, ny, opponent_color)
+                if liberty_count == 0:
+                    # 这个组被吃掉了
+                    for gx, gy in group_stones:
+                        board[gx][gy] = 2 # 从棋盘上移除
+                        captured_stones_total.append((gx, gy))
+        return captured_stones_total
+
+    async def get_ai_move(self, board, ai_color, user_color):
+        """让LLM决定下一步棋 (不再处理吃子判断)"""
+        func_tools_mgr = self.context.get_llm_tool_manager()
+
+        # 准备系统提示
+        color_name = "黑棋" if ai_color == 0 else "白棋"
+        opponent_color_name = "白棋" if ai_color == 0 else "黑棋"
+
+        # 只提取有棋子的位置
+        black_stones = []
+        white_stones = []
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board[r][c] == 0:
+                    black_stones.append([r, c])
+                elif board[r][c] == 1:
+                    white_stones.append([r, c])
+
+        system_prompt = f"""
+        你是一个围棋AI助手，你执{color_name}，用户执{opponent_color_name}。
+        当前棋盘状态：
+        - 黑棋位置: {black_stones}
+        - 白棋位置: {white_stones}
+
+        棋盘大小是19x19，坐标范围是0-18。
+
+        围棋规则和目标：
+        1.  **目标**: 最终目标是比对手围住更多的空白交叉点（称为“地”或“目”）。同时，也要尽可能多地吃掉对方的棋子。
+        2.  **落子**: 轮流在棋盘的空白交叉点上放置棋子。
+        3.  **气**: 一个棋子或一组相连的同色棋子，其上下左右直接相邻的空白交叉点称为“气”。
+        4.  **吃子**: 如果一个棋子或一组相连的棋子所有的“气”都被对方棋子占据，它们就会被从棋盘上提走（吃掉）。
+        5.  **禁入点 (自杀)**: 通常情况下，不能在没有“气”的位置落子，除非这个落子能立刻吃掉对方的棋子（即填掉对方棋子组的最后一口气）。
+        6.  **活棋**: 为了让自己的棋子不被吃掉，需要确保它们至少有两个或更多分开的“眼”（由己方棋子围住的内部空点）。只有拥有两个真眼的棋块是绝对活棋。
+        7.  **打劫**: 这是一个复杂的规则，用于防止双方无限重复提子。简单来说，如果一方提走对方一个子，对方不能立即在同一位置提回，必须先在别处下一手。 (你可以暂时简化或忽略打劫的复杂计算，但要避免明显重复的提子局面)。
+
+        你的任务：
+        - 分析当前棋局，考虑攻防、围地、棋子死活等因素。
+        - 选择一个符合规则且对你最有利的落子位置。
+        - 优先考虑能吃掉对方重要棋子、扩大自己地盘、确保自己棋子存活或威胁对方棋子的位置。
+        - 避免下在明显会被吃掉或没有意义的位置。
+        - **绝对禁止自杀行为** (除非该落子能吃掉对方棋子)。
+
+        请给出你的下一步落子位置。
+        你必须严格按照以下格式回复坐标：X,Y
+        其中X和Y是0到18之间的整数，表示落子位置的坐标。
+
+        确保你选择的位置没有棋子。
+        不要输出任何其他内容，只回复坐标，例如：9,10
+        """
+
+        try:
+            llm_response = await self.context.get_using_provider().text_chat(
+                prompt="请根据围棋规则和当前局面，选择你的最佳落子位置。",
+                contexts=[{"role": "system", "content": system_prompt}],
+                image_urls=[],
+                func_tool=func_tools_mgr
+            )
+
+            if llm_response.role == "assistant":
+                move_str = llm_response.completion_text.strip()
+                try:
+                    # 尝试解析 JSON 或 纯坐标
+                    try:
+                        import json
+                        data = json.loads(move_str)
+                        if isinstance(data, dict) and "move" in data and isinstance(data["move"], list) and len(data["move"]) == 2:
+                            x, y = data["move"]
+                        elif isinstance(data, list) and len(data) == 2:
+                             x, y = data
+                        else:
+                             raise ValueError("Invalid format")
+                    except (json.JSONDecodeError, ValueError):
+                         x, y = map(int, move_str.split(','))
+
+                    # 验证坐标有效
+                    if 0 <= x < self.board_size and 0 <= y < self.board_size and board[x][y] == 2:
+                        return (x, y)
+                    else:
+                        pass
+                except Exception:
+                    pass
+
+            # 如果无法获得有效坐标，返回随机位置
+            empty_positions = [(i, j) for i in range(self.board_size) for j in range(self.board_size) if board[i][j] == 2]
+            if empty_positions:
+                import random
+                return random.choice(empty_positions)
+
+            return None
+
+        except Exception:
+            return None
 
     @llmgo_group.command("quit")
     async def quit_game(self, event: AstrMessageEvent):
@@ -239,65 +396,6 @@ class LLMGoPlugin(Star):
                                  (margin + x * cell_size + 12, margin + y * cell_size + 12)], fill=(255, 255, 255), outline=(0, 0, 0))
         
         return img
-
-    async def get_ai_move(self, board, ai_color, user_color):
-        """让LLM决定下一步棋"""
-        func_tools_mgr = self.context.get_llm_tool_manager()
-        
-        # 准备系统提示
-        color_name = "黑棋" if ai_color == 0 else "白棋"
-        opponent_color_name = "白棋" if ai_color == 0 else "黑棋"
-        
-        # 把棋盘状态转换为JSON字符串
-        board_json = json.dumps(board.tolist())
-        
-        system_prompt = f"""
-        你是一个围棋AI助手，你执{color_name}，用户执{opponent_color_name}。
-        以下是当前棋盘状态的JSON格式（19x19矩阵）：
-        {board_json}
-        
-        其中：
-        - 0 表示黑棋
-        - 1 表示白棋
-        - 2 表示空位置
-        
-        请分析当前棋局并给出你的下一步落子位置。
-        你必须严格按照以下格式回复坐标：X,Y
-        其中X和Y是0到18之间的整数，表示落子位置的坐标。
-        
-        确保你选择的位置是空的（值为2），不要在已有棋子的位置落子。
-        不要输出任何其他内容，只回复坐标，例如：9,10
-        """
-        
-        try:
-            llm_response = await self.context.get_using_provider().text_chat(
-                prompt="我正在等待你下一步棋，请根据上述棋盘状态，选择一个合理的位置落子。",
-                contexts=[{"role": "system", "content": system_prompt}],
-                image_urls=[],
-                func_tool=func_tools_mgr
-            )
-            
-            if llm_response.role == "assistant":
-                move_str = llm_response.completion_text.strip()
-                try:
-                    x, y = map(int, move_str.split(','))
-                    # 验证坐标有效
-                    if 0 <= x < self.board_size and 0 <= y < self.board_size and board[x][y] == 2:
-                        return (x, y)
-                    else:
-                        # 随机生成一个有效坐标（作为备选）
-                        empty_positions = [(i, j) for i in range(self.board_size) for j in range(self.board_size) if board[i][j] == 2]
-                        if empty_positions:
-                            import random
-                            return random.choice(empty_positions)
-                except Exception:
-                    pass
-            
-            # 如果无法获得有效坐标，返回None
-            return None
-            
-        except Exception:
-            return None
 
     async def terminate(self):
         '''插件卸载/停用时调用'''
