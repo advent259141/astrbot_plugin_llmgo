@@ -1,5 +1,6 @@
 from astrbot.api.all import *
 from astrbot.api.event.filter import *
+from astrbot.api.message_components import Image as Img
 from PIL import Image, ImageDraw, ImageFont
 import os
 import numpy as np
@@ -64,12 +65,11 @@ class LLMGoPlugin(Star):
         board_image = self.render_stones(board)
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
         board_image.save(temp_file.name)
-
         initial_message = [
             Plain(f"你好, {user_name}! 你选择了{color_choice}，游戏开始！\n"),
             Plain(f"{'你先手' if user_color == 0 else 'AI先手'}。\n"),
             Plain("使用指令 /llmgo place <x> <y> 来下棋 (例如: /llmgo place 8 10)。\n"),
-            Image(file=temp_file.name)
+            Img(file=temp_file.name)
         ]
         yield event.chain_result(initial_message)
 
@@ -85,10 +85,9 @@ class LLMGoPlugin(Star):
                 board_image = self.render_stones(board)
                 temp_file_ai = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
                 board_image.save(temp_file_ai.name)
-
                 message = [
                     Plain(f"AI 在 ({x},{y}) 落子\n"),
-                    Image(file=temp_file_ai.name)
+                    Img(file=temp_file_ai.name)
                 ]
                 yield event.chain_result(message)
             else:
@@ -120,7 +119,7 @@ class LLMGoPlugin(Star):
             return
 
         if board[x][y] != 2:
-            yield event.plain_result(f"位置 ({x},{y}) 已有棋子。")
+            yield event.plain_result(f" 位置 ({x},{y}) 已有棋子。")
             return
 
         # --- 用户回合 ---
@@ -137,7 +136,7 @@ class LLMGoPlugin(Star):
         board_image_user.save(temp_file_user.name)
         user_place_message = [
             Plain(f"你在 ({x},{y}) 落子\n{capture_message}"),
-            Image(file=temp_file_user.name)
+            Img(file=temp_file_user.name)
         ]
         yield event.chain_result(user_place_message)
 
@@ -161,11 +160,12 @@ class LLMGoPlugin(Star):
             board_image_ai = self.render_stones(board)
             temp_file_ai = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
             board_image_ai.save(temp_file_ai.name)
-            ai_place_message = [
+            ai_place_message = event.make_result()
+            ai_place_message.chain = [
                 Plain(f"AI 在 ({ai_x},{ai_y}) 落子\n{ai_capture_message}"),
-                Image(file=temp_file_ai.name)
+                Img(file=temp_file_ai.name)
             ]
-            yield event.chain_result(ai_place_message)
+            await event.send(ai_place_message)
 
             # 6. 切换回用户回合
             game_state["current_turn"] = user_color
