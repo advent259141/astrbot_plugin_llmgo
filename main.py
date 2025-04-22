@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Tuple, Set
 # value: 游戏状态字典 (board, user_color, ai_color, current_turn)
 active_games: Dict[str, Dict[str, Any]] = {}
 
-@register("llm_go", "GitHub Copilot", "与 LLM 下围棋的插件", "0.1.0", "https://github.com/advent259141/astrbot_plugin_llmgo")
+@register("llm_go", "Jason.Joestar", "与 LLM 下围棋的插件", "1.0.1", "https://github.com/advent259141/astrbot_plugin_llmgo")
 class LLMGoPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -399,7 +399,7 @@ class LLMGoPlugin(Star):
 
     @llm_tool("start_go_game")
     async def start_go(self, event: AstrMessageEvent, color_choice: str):
-        """开始一局新的围棋游戏
+        """开始一局新的围棋游戏，需要指定用户的棋子种类，`黑棋`或`白棋`
 
         Args:
             color_choice (string): `黑棋` 或者 `白旗`
