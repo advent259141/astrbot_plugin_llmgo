@@ -408,14 +408,14 @@ class LLMGoPlugin(Star):
             yield result
 
     @llm_tool("place_stone")
-    async def place_stone(self, event: AstrMessageEvent, x: int, y: int):
+    async def place_stone(self, event: AstrMessageEvent, x: str, y: str):
         """围棋游戏中，下一颗棋子
 
         Args:
             x (int): 棋子横坐标，应在 0 至 18 之间
             y (int): 棋子纵坐标，应在 0 至 18 之间
         """
-        async for result in self.place(event, x, y):
+        async for result in self.place(event, int(x), int(y)):
             yield result
 
     @llm_tool("quit_go_game")
