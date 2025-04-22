@@ -412,8 +412,8 @@ class LLMGoPlugin(Star):
         """围棋游戏中，下一颗棋子
 
         Args:
-            x (int): 棋子横坐标，应在 0 至 18 之间
-            y (int): 棋子纵坐标，应在 0 至 18 之间
+            x (string): 棋子横坐标，应在 0 至 18 之间
+            y (string): 棋子纵坐标，应在 0 至 18 之间
         """
         async for result in self.place(event, int(x), int(y)):
             yield result
