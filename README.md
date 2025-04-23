@@ -26,10 +26,10 @@
 *   **/llmgo start &lt;颜色&gt;**: 开始一局新游戏。
     *   `<颜色>`: 必须是 `黑棋` 或 `白棋`。
     *   示例: `/llmgo start 黑棋`
-*   **/llmgo move &lt;x&gt; &lt;y&gt;**: 在指定坐标落子。
+*   **/llmgo place &lt;x&gt; &lt;y&gt;**: 在指定坐标落子。
     *   `<x>`: 横坐标 (0-18)。
     *   `<y>`: 纵坐标 (0-18)。
-    *   示例: `/llmgo move 9 9`
+    *   示例: `/llmgo place 9 9`
 *   **/llmgo quit**: 结束当前正在进行的游戏。
 
 ## 依赖项

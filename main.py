@@ -1,9 +1,7 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
-import astrbot.api.message_components as Comp
+from astrbot.api.all import *
+from astrbot.api.event.filter import *
+from astrbot.api.message_components import Image as Img
 from PIL import Image, ImageDraw, ImageFont
-import io
-import json
 import os
 import numpy as np
 import tempfile
@@ -14,7 +12,7 @@ from typing import Dict, Any, List, Tuple, Set
 # value: 游戏状态字典 (board, user_color, ai_color, current_turn)
 active_games: Dict[str, Dict[str, Any]] = {}
 
-@register("llm_go", "GitHub Copilot", "与 LLM 下围棋的插件", "0.1.0", "")
+@register("llm_go", "Jason.Joestar", "与 LLM 下围棋的插件", "1.0.1", "https://github.com/advent259141/astrbot_plugin_llmgo")
 class LLMGoPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -28,11 +26,11 @@ class LLMGoPlugin(Star):
         self.active_games = active_games # 使用全局字典
 
     # --- 指令组定义 ---
-    @filter.command_group("llmgo")
+    @command_group("llmgo")
     async def llmgo_group(self, event: AstrMessageEvent):
         '''围棋游戏指令组'''
         # 提供基础帮助信息或默认行为
-        yield event.plain_result("围棋插件指令：/llmgo start <颜色>, /llmgo move <x> <y>, /llmgo quit")
+        yield event.plain_result("围棋插件指令：/llmgo start <颜色>, /llmgo place <x> <y>, /llmgo quit")
 
     @llmgo_group.command("start")
     async def start_game(self, event: AstrMessageEvent, color_choice: str):
@@ -67,41 +65,37 @@ class LLMGoPlugin(Star):
         board_image = self.render_stones(board)
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
         board_image.save(temp_file.name)
-
         initial_message = [
-            Comp.Plain(f"你好, {user_name}! 你选择了{color_choice}，游戏开始！\n"),
-            Comp.Plain(f"{'你先手' if user_color == 0 else 'AI先手'}。\n"),
-            Comp.Plain("使用指令 /llmgo move <x> <y> 来下棋 (例如: /llmgo move 8 10)。\n"),
-            Comp.Image(file=temp_file.name)
+            Plain(f"你好, {user_name}! 你选择了{color_choice}，游戏开始！\n"),
+            Plain(f"{'你先手' if user_color == 0 else 'AI先手'}。\n"),
+            Plain("使用指令 /llmgo place <x> <y> 来下棋 (例如: /llmgo place 8 10)。\n"),
+            Img(file=temp_file.name)
         ]
+        yield event.chain_result(initial_message)
 
         # 如果AI先手，让AI先下
         if current_turn == ai_color:
             # AI第一步不需要考虑吃子
-            ai_move = await self.get_ai_move(board, ai_color, user_color)
-            if ai_move:
-                x, y = ai_move
+            ai_place = await self.get_ai_place(board, ai_color)
+            if ai_place:
+                x, y = ai_place
                 board[x][y] = ai_color
                 game_state["current_turn"] = user_color # 轮到用户
 
                 board_image = self.render_stones(board)
                 temp_file_ai = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
                 board_image.save(temp_file_ai.name)
-
-                initial_message.extend([
-                    Comp.Plain(f"\nAI 在 ({x},{y}) 落子\n"),
-                    Comp.Image(file=temp_file_ai.name)
-                ])
+                message = [
+                    Plain(f"AI 在 ({x},{y}) 落子\n"),
+                    Img(file=temp_file_ai.name)
+                ]
+                yield event.chain_result(message)
             else:
-                 initial_message.append(Comp.Plain("\nAI未能下出第一步棋，请你先下。"))
+                 yield event.plain_result("AI未能下出第一步棋，请你先下。")
                  game_state["current_turn"] = user_color # 轮到用户
 
-        message_result = event.make_result()
-        message_result.chain = initial_message
-        await event.send(message_result)
-
-    @llmgo_group.command("move")
-    async def make_move(self, event: AstrMessageEvent, x: int, y: int):
+    @llmgo_group.command("place")
+    async def place(self, event: AstrMessageEvent, x: int, y: int):
         '''在指定坐标 (x, y) 落子'''
         game_id = event.unified_msg_origin
 
@@ -125,7 +119,7 @@ class LLMGoPlugin(Star):
             return
 
         if board[x][y] != 2:
-            yield event.plain_result(f"位置 ({x},{y}) 已有棋子。")
+            yield event.plain_result(f" 位置 ({x},{y}) 已有棋子。")
             return
 
         # --- 用户回合 ---
@@ -133,46 +127,45 @@ class LLMGoPlugin(Star):
         board[x][y] = user_color
 
         # 2. 检查用户是否吃掉了AI的子
-        captured_by_user = self.find_and_remove_captured(board, x, y, user_color, ai_color)
+        captured_by_user = self.find_and_replace_captured(board, x, y, ai_color)
         capture_message = f"你吃掉了{len(captured_by_user)}颗棋子！\n" if captured_by_user else ""
 
         # 4. 发送用户落子和吃子结果
         board_image_user = self.render_stones(board)
         temp_file_user = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
         board_image_user.save(temp_file_user.name)
-        user_move_message = event.make_result()
-        user_move_message.chain = [
-            Comp.Plain(f"你在 ({x},{y}) 落子\n{capture_message}"),
-            Comp.Image(file=temp_file_user.name)
+        user_place_message = [
+            Plain(f"你在 ({x},{y}) 落子\n{capture_message}"),
+            Img(file=temp_file_user.name)
         ]
-        await event.send(user_move_message)
+        yield event.chain_result(user_place_message)
 
         # 5. 切换到AI回合
         game_state["current_turn"] = ai_color
 
         # --- AI 回合 ---
         # 1. 获取AI落子位置
-        ai_move = await self.get_ai_move(board, ai_color, user_color)
-        if ai_move:
-            ai_x, ai_y = ai_move
+        ai_place = await self.get_ai_place(board, ai_color)
+        if ai_place:
+            ai_x, ai_y = ai_place
 
             # 2. AI落子
             board[ai_x][ai_y] = ai_color
 
             # 3. 检查AI是否吃掉了用户的子
-            captured_by_ai = self.find_and_remove_captured(board, ai_x, ai_y, ai_color, user_color)
+            captured_by_ai = self.find_and_replace_captured(board, ai_x, ai_y, user_color)
             ai_capture_message = f"AI吃掉了{len(captured_by_ai)}颗棋子！\n" if captured_by_ai else ""
 
             # 5. 发送AI落子和吃子结果
             board_image_ai = self.render_stones(board)
             temp_file_ai = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
             board_image_ai.save(temp_file_ai.name)
-            ai_move_message = event.make_result()
-            ai_move_message.chain = [
-                Comp.Plain(f"AI 在 ({ai_x},{ai_y}) 落子\n{ai_capture_message}"),
-                Comp.Image(file=temp_file_ai.name)
+            ai_place_message = event.make_result()
+            ai_place_message.chain = [
+                Plain(f"AI 在 ({ai_x},{ai_y}) 落子\n{ai_capture_message}"),
+                Img(file=temp_file_ai.name)
             ]
-            await event.send(ai_move_message)
+            await event.send(ai_place_message)
 
             # 6. 切换回用户回合
             game_state["current_turn"] = user_color
@@ -199,7 +192,7 @@ class LLMGoPlugin(Star):
             return 0, set(), set()
 
         q = [(x, y)]
-        visited_stones = set([(x, y)])
+        visited_stones = {(x, y)}
         liberties = set()
 
         while q:
@@ -213,13 +206,13 @@ class LLMGoPlugin(Star):
                     q.append((nx, ny))
         return len(liberties), visited_stones, liberties
 
-    def find_and_remove_captured(self, board: np.ndarray, move_x: int, move_y: int, move_color: int, opponent_color: int) -> List[Tuple[int, int]]:
+    def find_and_replace_captured(self, board: np.ndarray, place_x: int, place_y: int, opponent_color: int) -> List[Tuple[int, int]]:
         """
-        在落子(move_x, move_y)后，查找并移除被吃掉的对方棋子。
+        在落子(place_x, place_y)后，查找并移除被吃掉的对方棋子。
         返回被吃掉的棋子坐标列表。
         """
         captured_stones_total = []
-        for nx, ny in self.get_neighbors(move_x, move_y):
+        for nx, ny in self.get_neighbors(place_x, place_y):
             if board[nx][ny] == opponent_color:
                 liberty_count, group_stones, _ = self.get_group_liberties(board, nx, ny, opponent_color)
                 if liberty_count == 0:
@@ -229,8 +222,9 @@ class LLMGoPlugin(Star):
                         captured_stones_total.append((gx, gy))
         return captured_stones_total
 
-    async def get_ai_move(self, board, ai_color, user_color):
+    async def get_ai_place(self, board, ai_color):
         """让LLM决定下一步棋 (不再处理吃子判断)"""
+        global json
         func_tools_mgr = self.context.get_llm_tool_manager()
 
         # 准备系统提示
@@ -288,24 +282,24 @@ class LLMGoPlugin(Star):
             )
 
             if llm_response.role == "assistant":
-                move_str = llm_response.completion_text.strip()
+                place_str = llm_response.completion_text.strip()
                 try:
                     # 尝试解析 JSON 或 纯坐标
                     try:
                         import json
-                        data = json.loads(move_str)
-                        if isinstance(data, dict) and "move" in data and isinstance(data["move"], list) and len(data["move"]) == 2:
-                            x, y = data["move"]
+                        data = json.loads(place_str)
+                        if isinstance(data, dict) and "place" in data and isinstance(data["place"], list) and len(data["place"]) == 2:
+                            x, y = data["place"]
                         elif isinstance(data, list) and len(data) == 2:
                              x, y = data
                         else:
                              raise ValueError("Invalid format")
                     except (json.JSONDecodeError, ValueError):
-                         x, y = map(int, move_str.split(','))
+                         x, y = map(int, place_str.split(','))
 
                     # 验证坐标有效
                     if 0 <= x < self.board_size and 0 <= y < self.board_size and board[x][y] == 2:
-                        return (x, y)
+                        return x, y
                     else:
                         pass
                 except Exception:
@@ -402,3 +396,34 @@ class LLMGoPlugin(Star):
         # 清理可能残留的游戏状态
         self.active_games.clear()
         pass
+
+    @llm_tool("start_go_game")
+    async def start_go(self, event: AstrMessageEvent, color_choice: str):
+        """开始一局新的围棋游戏，需要指定用户的棋子种类，`黑棋`或`白棋`
+
+        Args:
+            color_choice (string): `黑棋` 或者 `白旗`
+        """
+        async for result in self.start_game(event, color_choice):
+            yield result
+
+    @llm_tool("place_stone")
+    async def place_stone(self, event: AstrMessageEvent, x: str, y: str):
+        """围棋游戏中，下一颗棋子
+
+        Args:
+            x (string): 棋子横坐标，应在 0 至 18 之间
+            y (string): 棋子纵坐标，应在 0 至 18 之间
+        """
+        async for result in self.place(event, int(x), int(y)):
+            yield result
+
+    @llm_tool("quit_go_game")
+    async def quit_go(self, event: AstrMessageEvent):
+        """退出围棋游戏
+
+        Args:
+
+        """
+        async for result in self.quit_game(event):
+            yield result
